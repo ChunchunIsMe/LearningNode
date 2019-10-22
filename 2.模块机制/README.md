@@ -175,3 +175,44 @@ CommonJS为package.json文件定义了如下一些必须的字段
 全局模式这个称谓其实并不精确，存在诸多误导。实际上，-g是将一个包安装为全局可用的可执行命令。他根据文件中bin字段配置，将实际脚本链接到Node可执行文件相同的路径下
 
 事实上，通过全局模式安装的所有模块包都被安装进了一个统一的目录下这个目录可以通过get-lib.js推算出来
+
+2. 从本地安装
+
+对于一些没有发布到NPM上的包，或是因为网络原因导致无法直接安装的包，可以通过将包下载到本地，然后以本地安装。本地安装只需为NPM指明package.json文件所在位的位置即可：它可以是一个包含package.json的存档文件，也可以是一个URL地址，也可以是一个目录下有package.json文件的目录位置。具体参数如下：
+- npm install [tarball file]
+- npm install [tarball url]
+- npm install [folder]
+
+3. 从非官方源安装
+有三种方法
+- 添加--registry=http://registry.url 即可，如：npm i [package] --registry=http://registry.url
+- 使用npm config set registry http://registry.url 指定默认源
+- 使用nrm进行源管理
+##### 发布包
+1. 编写模块
+
+编写好你的代码并且导出相应的模块
+
+2. 初始化包描述文件
+
+运行npm init指令
+
+3. 注册包仓库账号
+
+运行 npm adduser
+
+4. 上传包
+
+运行npm public <folder> 在这个过程中，npm会将目录打包为一个存档文件，然后上传到官方源仓库中。
+
+5. 管理包权限
+
+通过npm owner <指令> 来管理包的权限
+##### 分析包
+可以通过npm ls来分析出当前路径下能够通过模块路径找到的所有包，并且生成依赖树。
+#### 局域NPM
+如果想同时能够享受到NPM上众多的包，同时对自己的包进行保密和限制，现有的解决方案就是搭建自己的NPM仓库
+
+详情见附录D（现在还没有以后会完善）
+### 前后端公用模块
+这里主要讲了AMD规范和CMD规范，到现在已经很少用了，所以我也只是看看，并不做记录。
