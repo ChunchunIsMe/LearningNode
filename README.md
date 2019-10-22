@@ -1,2 +1,2 @@
 # LearningNode
-学习Node的一些笔记
+这个项目主要是用来记录我对node.js的学习笔记
