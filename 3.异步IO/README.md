@@ -150,3 +150,59 @@ Windows下主要通过IOCP来向系统内核发送I/O调用和从内核获取已
 ### 小结
 从前面实现异步I/O的过程描述中，我们可以提取出异步I/O的几个关键词：单线程、事件循环、观察者和I/O线程池。这里单线程和I/O线程池之间看起来有些悖论的样子。由于我们知道JavaScript是单线程的，所以按常识很容易理解为它不能充分利用多核CPU。事实上，在Node中，除了JavaScript是单线程外，Node自身其实是多线程的，只是I/O线程使用CPU较少。另一个需要重视的观点就是，除了用户代码无法并行执行外，所有的I/O（磁盘I/O和网络I/O等）则是可以并行起来的。
 ## 非I/O的异步Api
+与I/O无关的异步Api，分别是setTimeout()/setInterval()/setImmediate()/process.nextTick()。
+### 定时器
+setTimeout和setInterval与浏览器中的Api是一致的，分别用于单次和多次定时执行执行任务。它们实现原理与异步I/O比较类似，只是不需要I/O线程池的参与。调用setTimeout()或者setInterval()创建的定时器会被插入到定时器观察者内部的一个红黑树中。每次Tick执行时，会从该红黑树中迭代取出定时器对象，检查是否超过定时时间，如果超过，就形成一个事件，它的回调函数将立即执行。
+
+定时器的问题在于，他并非精确的。尽管事件循环十分快，但是如果某一次循环占用的时间比较多，那么下次循环时，也许已经超时很久了。譬如通过setTimeout()设定一个任务在10毫秒后执行，但是在9毫秒后，有一个任务占用了5毫秒的CPU时间片，再次轮到定时器执行时，时间就已经过期4毫秒。
+### process.nextTick()
+在未了解process.nextTick()之前，很多人也许为了立即异步执行一个任务，会调用setTimeout来到到所需的效果
+```
+setTimeout(functiom () {
+    // TODO
+}, 0);
+```
+由于事件循环自身的特点，定时器的精确度不够。而事实上，采用定时器需要动用红黑树，创建定时器对象和迭代等操作，而setTimeout(fn, 0)的方式较为浪费性能。实际上，process.nextTick()方法的操作相对较为轻量。nextTick具体实现代码为
+```
+process.nextTick = function (callback) {
+  if (process._exiting) {
+    return;
+  }
+  if (tickDepth >= process.maxTickDepth()) {
+    maxTickWran();
+  }
+  var tock = {
+    callback
+  }
+  if(process.domain) {
+    tock.domain = process.domain;
+  }
+  nextTickQueue.push(tock);
+  if (nextTickQueue.length) {
+    process._needTickCallback();
+  }
+}
+```
+每次调用process.nextTick()方法，只会将回调函数放入队列中，在下一轮Tick时取出执行。定时器中采用红黑树的操作时间复杂度为O(lg(n)),nextTick()时间复杂度为O(1)。相较之下process.nextTick()更高效。
+### setImmediate()
+setImmediate()方法与process.nextTick()方法十分类似，都是将回调函数延迟执行。方法执行方法见test_setImmediate.js
+
+但是两者之间其实是有细微差别的。将他们放在一起查看优先级，请看代码pk_first.js
+
+从结果我们可以看到，process.nextTick()中的回调函数执行的优先级要高于setImmediate()。这里的原因在于事件循环对观察者是有先后顺序的，process.nextTick()属于idle观察者，setImmediate()属于check观察者。在每一个轮循环检查中，idle观察者先于I/O观察者，I/O观察者先于check观察者。
+
+再具体实现上，process.nextTick()的回调函数保存在一个数组中，setImmediate()结果则是保存在链表中。在行为上，process.nextTick()在每轮循环中会将数组中的回调函数全部执行完，而setImmediate()在每轮循环中执行链表中的一个回调函数，请看pk_second.js
+
+书上说的执行顺序和现在的稍有不同，因为当时是基于0.x.x，现在v6版本的uv__run_check 的机制改了，idle、check、prepare队列都是一次性处理掉当前任务队列中注册的所有回调，这里两个immediate事件回调注册到了check队列中，显然会被uv__run_check依次执行掉，等check队列执行结束后，才会执行在setImmediate回调执行中注册的process.nextTick函数回调。
+
+### 事件驱动与高性能服务器
+异步I/O不仅仅应用在文件操作中。对于网络套接字的处理，Node也应用到了异步I/O，网络套接字上侦听到的请求都会形成事件交给I/O观察者。事件循环会不停地处理这些网路I/O事件。如果JavaScript有传入回调函数，这些事件将会最终传递到业务逻辑层进行处理。利用Node构建Web服务器，正是再这样一个基础上实现的。
+
+下面为几种经典的服务器模型，这里对比下他们的优缺点。
+- 同步式。对于同步式的服务，一次只能处理一个请求，并且其余请求都处于等待状态。
+- 每进程/每请求。为每个请求启动一个进程，这样可以处理多个请求，但是它不具备扩展性，因为系统资源只有那么多。
+- 每线程/每请求。为每个请求启动一个线程来处理。尽管线程比进程要轻量，但是由于每个线程都占用一定内存，当大量并发请求到来时，内存将很快用光，导致服务器缓慢。没线程/没请求 的扩展性比 没进程/没请求 的方式要好，但对于大型站点而言依然不够。
+
+Node通过事件驱动的方式处理请求，无需为每一个请求创建额外的对应线程，可以省掉创建线程和销毁线程的开销，同时操作系统在调度任务时因为线程比较少，上下文切换的代价很低。这使得服务器能够有条不紊的处理请求，即使在大量连接的情况下，也不受线程上下文切换开销的影响，这是Node高性能的一个原因。
+## 小结
+可以看出，事件循环是异步实现的核心，它与浏览器中的执行模型保持了一致。而像古老的Rhino，尽管是较早就能在服务器端运行的JavaScript运行时，但是执行模型并不能像浏览器采用事件驱动，而是像其他语言一般采用同步I/O作为主要模型，这造成它在性能上无所发挥。Node正是依靠构建了一套完善的高性能异步I/O框架，打破了JavaScript在服务器端止步不前的局面。
