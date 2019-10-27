@@ -130,3 +130,23 @@ QueueUserWorkItem()方法接受3个参数：第一个参数是将要执行的方
 至此，JavaScript调用立即返回，由JavaScript层面发起的异步调用的第一阶段就此结束。JavaScript线程可以继续执行当前任务的后续操作。当前的I/O操作在线程池中等待执行，不管他是否阻塞I/O，都不会影响JavaScript线程的后续执行，如此就达到了异步的目的。
 
 请求对象是异步I/O过程中的重要中间产物，所有的状态都保存在这个对象中，包括送入线程池等待执行以及I/O操作完毕后的回调处理。
+
+### 执行回调
+组装好请求对象、送入I/O池等待执行，实际上完成了异步I/O的第一部分，回调通知是第二部分。
+
+线程池中I/O操作调用完毕之后，会将获取的结果储存在req->request属性上，然后调用PostQueuedCompletionStatus()通知IOCP，告知当前对象已经操作完成:
+```
+PostQueueCompletionStatus((loop)->iocp,o,o,&((req)->overlapped))
+```
+PostQueuedCompletionStatus()方法的作用是向IOCP提交执行状态，并将线程归还线程池。通过PostQueuedCompletionStatus提交的状态，可以通过GetQueueCompletionStatus()提取。
+
+在这个过程中，我们其实还调用了事件循环的I/O观察者。在每次Tick的执行中，它会调用IOCP相关的GetQueueCompletionStatus()方法检查线程池中是否有执行完的请求，如果存在，会将请求对象加入到I/O观察者的队列中，然后将其当做事件处理。
+
+I/O观察者回调函数的行为就是取出请求对象的request属性作为参数，取出oncomplete_sym属性作为方法，然后执行调用，以此达到调用JavaScript中传入的回调函数的目的。
+
+事件循环、观察者、请求对象、I/O线程池这四者共同构成了Node异步I/O模型的基本要素。
+
+Windows下主要通过IOCP来向系统内核发送I/O调用和从内核获取已完成的I/O操作，配以事件循环，以此完成异步I/O的过程。在Linux下通过epoll实现这个过程，FreeBSD下通过kqueue是吸纳，Solaris下通过Event ports实现。不同的是线程池在Windows下由内核(IOCP)直接提供，*nux系列下由libuv自行实现。
+### 小结
+从前面实现异步I/O的过程描述中，我们可以提取出异步I/O的几个关键词：单线程、事件循环、观察者和I/O线程池。这里单线程和I/O线程池之间看起来有些悖论的样子。由于我们知道JavaScript是单线程的，所以按常识很容易理解为它不能充分利用多核CPU。事实上，在Node中，除了JavaScript是单线程外，Node自身其实是多线程的，只是I/O线程使用CPU较少。另一个需要重视的观点就是，除了用户代码无法并行执行外，所有的I/O（磁盘I/O和网络I/O等）则是可以并行起来的。
+## 非I/O的异步Api
