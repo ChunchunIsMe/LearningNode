@@ -158,3 +158,322 @@ emmiter.emit('event1', 'hello world');
 - 为了处理异常，EventEmitter对象对error事件进行了特殊对待。如果运行期间的错误触发了error事件，EventEmitter会检查是否有对error事件添加过侦听器。如果添加了，这个错误将会交给该侦听器去处理，否则这个错误将会作为异常抛出，如果外部没有捕获这个异常，将会引起线程退出。一个健壮的EventEmitter实例应该对error事件做处理。
 
 1. 继承events模块
+
+实现一个继承EventEmitter的类是十分简单的下面的代码是Node中Stream对象继承EventEmitter的例子
+```
+var events = require('events');
+function Stream() {
+  events.EventEmitter.call(this);
+}
+// util的继承方法
+util.inherits(Stream, events.EventEmitter);
+```
+Node在util模块封装了继承的方法，所以此处可以很方便的调用。开发者可以通过这样的方式轻松继承EventEmitter类，利用事件机制解决业务问题。在Node提供的核心模块中，有近半都继承自EventEmitter。
+
+2. 利用事件队列解决雪崩问题
+
+在事件订阅/发布模式中，通常也有一个once()方法，通过它添加的侦听器只能执行一次，在执行之后就会将它与事件的关联移除。这个特性常常可以帮助我们过滤一些重复性的事件相应。
+
+下面我们来介绍一下如何采用once()来解决雪崩问题。
+
+在计算机中，缓存由于存放在内存中，访问速度十分快，常常用于加速数据访问，让绝大多数的请求不必重复去做一些低效的数据读取。所谓雪崩问题，就是在高访问量、大并发量的情况下缓存失效的情景，此时大量的请求同时涌入数据库中，数据库无法同时承受如此大的查询请求，进而往前影响到网站整体的响应速度。
+
+以下是一条数据库查询语句的调用
+```
+var select = function (callback) {
+  db.select("SQL", function (results) {
+    callback(results);
+  })
+}
+```
+如果站点刚好启动，这时缓存中是不存在数据的，而如果访问量巨大，同一句SQL会被发送到数据库中反复查询，会影响服务的整体性能。一种改进方案是添加一个状态锁，相关代码如下
+```
+var status = 'ready';
+var select = function (callback) {
+  if(status === 'ready') {
+    status = 'pending'
+    db.select("SQL", function (results) {
+      status = 'ready';
+      callback(results);
+    })
+  }
+}
+```
+但是这种情况下，连续地多次调用select()时，只有第一次调用是生效的，后续的select()是没有数据服务的，这个时候可以引入事件队列，相关代码如下
+```
+var proxy = new events.EventEmitter();
+var status = 'ready';
+var select = function (callback) {
+  proxy.once('selected', callback)
+  if(status === 'ready') {
+    status = 'pending'
+    db.select("SQL", function (results) {
+      proxy.emit("selected", results);
+      status = 'ready';
+    })
+  }
+}
+```
+这里我们利用了once()方法，将所有请求的回调都压入事件队列中，利用其执行一次就会将监视器移除的特点，保证每一个回调只会被执行一次。对于相同的SQL语句，保证在同一个查询开始到结束的过程永远只有一次。SQL在进行查询时，新到来的相同调用只需在队列中等待数据就绪即可，一旦查询结束，得到的结果可以被这些调用共同使用。这种方式能节省重复的数据库调用产生的开销。由于Node单线程执行的原因，此处无须担心状态同步问题。这种方式其实也可以应用到其他远程调用的场景中，即使外部没有缓存策略，也能有效节省重复开销。
+
+此处可能因为存在侦听器过多引发的警告，需要调用setMaxListeners(0)移除掉警告，或者设置更大的阈值。
+
+3. 多异步之间的协作方案
+
+事件发布/订阅模式有着它的优点。利用高阶函数的优势，侦听器作为回调函数可以随意添加和删除，它帮助开发者轻松处理随时可能添加的业务逻辑。也可以隔离业务逻辑，保持业务逻辑单元的职责单一。一般而言，事件与侦听器的关系是一对多，但在异步编程中，也会出现事件与侦听器的情况是多对一的情况，也就是说一个业务逻辑可能依赖两个通过回调或者事件传递的结果。前面提及到的嵌套过深的原因即是如此。
+
+这里我们尝试通过原生代码解决难点2中为了最终效果的处理而导致可以并行调用但实际只能串行执行的问题。我们的目标是既要享受异步I/O带来的性能提升，也要保持良好的编码风格。这里以渲染页面所需要的模板读取、数据读取和本地资源化读取为例简要介绍一下，相关代码如下
+```
+var count = 0;
+var results = {};
+var done = function (key, value) {
+  results[key] = value;
+  count++;
+  if(count === 3) {
+    // 渲染页面
+    render(results);
+  }
+};
+
+fs.readFile(path, 'utf8', function (err, templete) {
+  done('templete', templete);
+})
+
+db.query(sql, function (err, data) {
+  done('data', data);
+})
+
+l1on.get(function (err, resources) {
+  done('resources', resources);
+})
+```
+使用哨兵变量改进代码
+```
+var after = function (times, callback) {
+  var count = 0;
+  var results = {};
+  return function (key, value) {
+    results[key] = value;
+    count++;
+    if(count === times) {
+      // 渲染页面
+      render(results);
+    }
+  };
+}
+
+var done = after(times, render);
+```
+上述方案实现了多对一的目的。如果业务继续增长，我们依然可以继续利用发布/订阅方式来完成多对多的方案，相关代码如下
+```
+var emitter = new events.Emitter();
+var done = after(times, render);
+
+emitter.on('done', done);
+emitter.on('done', other);
+
+fs.readFile(path, 'utf8', function (err, templete) {
+  done('templete', templete);
+})
+
+db.query(sql, function (err, data) {
+  done('data', data);
+})
+
+l1on.get(function (err, resources) {
+  done('resources', resources);
+})
+```
+这种方案结合了前者用简单的偏函数完成多对一的收敛和事件发布/订阅模式中一对多的发散。
+
+在上面的方法中，有一个令调用者不那么舒服的问题，那就是调用者要去准备这个done()函数，以及在回调函数中需要从结果中把数据一个个提取出来，再进行处理。
+
+另一个方案则是来自于笔者(朴灵大佬)自己写的EventProxy模块，它是对事件订阅/发布模式的扩充，可以自由订阅组合事件。由于依旧采用的是事件订阅/发布模式，与Node十分契合，相关代码如下
+```
+var proxy = new EventProxy();
+proxy.all("template", "data", "resources", function (err, template) {
+  // TODO
+})
+
+fs.readFile(path, 'utf8', function (err, templete) {
+  done('templete', templete);
+})
+
+db.query(sql, function (err, data) {
+  done('data', data);
+})
+
+l1on.get(function (err, resources) {
+  done('resources', resources);
+})
+```
+EventProxy提供了一个all()方法来订阅多个事件，当每个事件都被触发之后，侦听器才会执行。另外一个方法是tail()方法，它与all()方法的区别在于all()方法的侦听器在满足条件之后只会执行一次，tail()方法的侦听器则在满足条件时执行一次之后，如果组合事件中某个事件被再次触发，侦听器会用最新的数据继续执行。
+
+all()方法带来的另一个改进则是：在侦听器中返回的参数列表与订阅组合事件的事件列表是一致对外的
+
+除此之外，在异步的场景下，我们常常需要从一个接口多次读取数据，此时触发的事件名或许是相同的。EventProxy提供了after()方法来实现事件在执行多少次后执行侦听器的单一事件组合订阅方式，示例代码如下
+```
+var proxy = new EventProxy();
+
+proxy.after("data", 10, function () {
+  // TODO
+})
+```
+这段代码表示执行10次data事件后执行侦听器。这个侦听器得到的数据为10次按事件触发次序排序的数组。
+
+EventProxy模块除了可以应用于Node中外，还可以在前端浏览器中。
+
+4. EventProxy的原理
+
+EventProxy 来自于backbone的事件模块，backbone的事件模块是Model、View模块的基础功能，在前端有广泛的使用。它在每个非all事件触发时都会触发一次all事件。相关代码如下：
+```
+// Trigger an event, firsting all bound callback. Callbacks are passed the same arguments as 'trigger' is, apart from the event name
+// Listening for "all" passes the true event name as the first argument
+
+trigger: function (eventName) {
+  var list, calls, ev, callback, args;
+  var both = 2;
+  if(!(calls === this._callbacks)) return this;
+  while (both--) {
+    ev = both ? eventName: 'all';
+    if(list = calls[ev]) {
+      for(var i = 0,l = list.length; i < l, i++) {
+        if(!(callback === list[i])) {
+          list.splice(i, 1);
+          i--;
+          l--;
+        } else {
+          args = both ? Array.prototype.slice.call(argument, 1) : arguments;
+          callback[0].apply(callback[1] || this, args)
+        }
+      }
+    }
+  }
+  return this;
+}
+```
+EventProxy则是将all当做一个事件流的拦截层，在其中注入一些业务来处理单一事件无法解决的异步处理问题。类似的扩展方法还有all、tail、after、not、any等。
+
+5. EventProxy的异常处理
+
+EventProxy在事件发布/订阅模式的基础上还完善了异常处理。在异步方法中，异常处理需要占用一定比例的精力。在过去一段时间内，我们都是通过额外添加error事件来进行异常同一处理的，代码大致如下：
+```
+exports.getContent = function (callback) {
+  var ep = new EventProxy();
+  ep.all('tpl', 'data', function (tpl, data) {
+    // 成功回调
+    callback(null, {
+      template: tpl,
+      data: data
+    });
+  });
+  // 侦听error事件
+  ep.bind('error', function (err) {
+    // 卸载掉所有函数
+    ep.unbind();
+    // 异常回调
+    callback(err);
+  });
+  fs.readFile('template.tpl', 'utf-8', function (err, content) {
+    if (err) {
+      // 一旦发生异常，一律交给error事件的函数进行处理
+      return ep.emit('error', err);
+    } 
+    ep.emit('tpl', content);
+  });
+  db.get('some sql', function (err, result) {
+    if (err) {
+      // 一旦发生异常，一律交给error事件的函数进行处理
+      return ep.emit('error', err);
+    } 
+    ep.emit('data', result);
+  });
+}
+```
+因为异常处理的原因，代码量一下子多了起来，而EventProxy在实践过程中改进了这个问题，相关代码如下：
+```
+exports.getContent = function (callback) {
+  var ep = new EventProxy();
+  ep.all('tql', 'data', function (tpl, data) {
+    // 成功回调
+    callback(null, {
+      templete: tpl,
+      data: data
+    })
+  });
+
+  // 绑定错误函数
+  ep.fail(callback);
+
+  fs.readFile('templage.tpl', 'utf-8', ep.done('tpl'));
+  db.get('some sql', ep.done('data'));
+}
+```
+在上述代码中，EventProxy提供了fail()和done()这两个实例来优化异常处理，使得开发者将精力关注在业务部分，而不是异常捕获上。
+
+关于fail的实现，可以参见以下的变换：
+```
+ep.fail(callback);
+```
+上面这行代码等价于下面的代码
+```
+ep.fail(function (err) {
+  callback(err);
+})
+```
+又等价于
+```
+ep.bind('error', function (err) {
+  // 卸载掉所有函数
+  ep.unbind();
+  // 异常回调
+  callback(err);
+})
+// done方法的实现，也可以参见 ep.done('tpl') 的变换
+```
+等价于：
+```
+function(err, content) {
+  if (err) {
+    // 一旦发生异常， 一律交给error事件处理函数处理
+    return ep.emit('error', err);
+  }
+  ep.emit('tpl', content);
+}
+```
+同时，done方法也接受一个函数作为参数，相关代码如下所示：
+```
+ep.done(function (content) {
+  // TODO
+  // 这里无须考虑异常
+  ep.emit('tpl', content);
+})
+```
+这段代码等价于：
+```
+function (err, content) {
+  if (err) {
+    // 一旦发生异常， 一律交给error事件的处理函数处理
+    return ep.emit('error', err);
+  }
+
+  ((function (content){
+    // TODO
+    // 这里无须考虑异常
+    ep.emit('tpl', content);
+  })(content));
+}
+```
+当只传入一个回调函数时，需要手工调用emit()触发事件。另一个改进是同时传入事件名和回调函数，相关代码如下
+```
+ep.done('tpl', function (content) {
+  // content.replace('s', 'S');
+  // TODO
+  // 这里无须考虑异常
+  return content;
+})
+```
+在这种方式下，我们无须在回调函数中处理事件的触发，只需将处理过的数据返回即可。返回的结果将在done()方法中用作事件的数据而触发。
+
+这里的fail()和done()十分类似Promise模式中的fail()和done()。换句话而言，这可以算作事件发布/订阅模式向Promise模式的借鉴。这样完善既提升了程序的健壮性，同时也降低了代码量。
+### Promise/Deferred模式
