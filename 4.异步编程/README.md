@@ -477,3 +477,101 @@ ep.done('tpl', function (content) {
 
 这里的fail()和done()十分类似Promise模式中的fail()和done()。换句话而言，这可以算作事件发布/订阅模式向Promise模式的借鉴。这样完善既提升了程序的健壮性，同时也降低了代码量。
 ### Promise/Deferred模式
+这一章主要描绘的就是对Promise的构思/实现/使用，当时的node是v0.9X,现在node以及v13了已经支持了Promise，可以去看看。
+
+首先通过继承Node的events模块来实现一个简单的Promise, 见 easyPromise.js
+
+有了 easyPromise.js 的代码
+```
+res.setEncoding('utf8');
+
+res.on('data', function (chunk) {
+  // TODO chunk
+})
+
+res.on('error', function (err) {
+  // TODO error
+})
+
+res.on('end', function () {
+  // done
+})
+```
+上面代码可以写成
+```
+promisify(res).then(function (){
+  // done
+}, function (err) {
+  // TODO error
+}, function (chunk) {
+  // TODO chunk
+})
+```
+但是这样还是需要外部来触发事件从而传递到Promise里面来相应，这样只是优化了写法，并没有把promise完全抽象出来
+
+接下来是promise的多异步协作, 我们仍然将代码加在 easyPromise.js 中,我根据现有的Promise.all对书中代码进行了改进。
+
+promise的秘诀其实在多队列的操作。如果有一组纯异步的api，为了完成一串事情，我们的代码大致如下：
+```
+obj.api1(function (value1) {
+  obj.api2(value1, function (value2) {
+    obj.api3(value2, function (value3) {
+      obj.api4(value3, function (value4) {
+        callback(value4);
+      })
+    })
+  })
+})
+```
+由于有按每个步骤依次执行的需求，所以必须嵌套执行。但那样我们会得到难看的嵌套，超过10个的连续嵌套就会让代码非常难看。
+
+我们再通过普通的函数将上面的代码进行展开
+```
+var handler1 = function (value1) {
+  obj.api2(value1, handler2)
+}
+
+var handler2 = function (value2) {
+  obj.api2(value2, handler3)
+}
+
+var handler3 = function (value3) {
+  obj.api2(value3, handler4)
+}
+
+var handler4 = function (value4) {
+  callback(value4)
+}
+
+obj.api1(handler1)
+```
+而对于喜欢利用事件的开发者，我们展开后的代码则是
+```
+var EventEmitter = require('events');
+var emmiter = new EventEmitter();
+
+obj.api1(function (value1) {
+  emmiter.emit('emitter2', value1)
+});
+
+emmiter.on('emitter2', function (value1) {
+  obj.api2(value1, function (value2) {
+    emmiter.emit('emitter3', value2)
+  })
+})
+
+emmiter.on('emitter3', function (value2) {
+  obj.api3(value2, function (value3) {
+    emmiter.emit('emitter3', value3)
+  })
+})
+
+emmiter.on('emitter4', function (value3) {
+  obj.api4(value3, function (value4) {
+    callback(value4)
+  })
+})
+```
+抄都给我抄烦了，你看看是不是非常的糟糕，所以promise的出现真的拯救了世界。
+
+所以我们来实现完整的promise吧，详见myPromise.js
