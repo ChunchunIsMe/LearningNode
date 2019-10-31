@@ -574,4 +574,7 @@ emmiter.on('emitter4', function (value3) {
 ```
 抄都给我抄烦了，你看看是不是非常的糟糕，所以promise的出现真的拯救了世界。
 
-所以我们来实现完整的promise吧，详见myPromise.js
+所以我们来实现完整的promise吧，详见myPromise.js codePromise.js是网上的详见 https://www.jianshu.com/p/43de678e918a
+
+### 流程控制库
+#### 尾触发与Next
