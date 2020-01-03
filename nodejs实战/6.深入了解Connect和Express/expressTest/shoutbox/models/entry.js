@@ -1,9 +1,8 @@
-const redis = require('redis');
-const db = redis.createClient();
+const db = require('./connect');
 
 class Entry {
   constructor(obj) {
-    for (let key of obj) {
+    for (let key in obj) {
       this[key] = obj[key];
     }
   }
