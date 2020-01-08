@@ -32,6 +32,16 @@ class Application {
     }
     this._router.handle(req, res, done)
   }
+
+  use(path, fn) {
+    const router = this._router;
+    if (typeof path === 'function') {
+      fn = path;
+      path = '/'
+    }
+    router.use(path, fn)
+    return this;
+  }
 }
 http.METHODS.forEach(method => {
   method = method.toLowerCase();
