@@ -5,10 +5,12 @@ class Layer {
     this.path = path;
   }
 
-  handle_requrest(req, res) {
+  handle_requrest(req, res, next) {
     const fn = this.handle;
-    if (fn) {
-      fn(req, res);
+    try {
+      fn(req, res, next);
+    } catch (err) {
+      next(err)
     }
   }
 
@@ -17,6 +19,18 @@ class Layer {
       return true;
     }
     return false;
+  }
+
+  handle_error(error, req, res, next) {
+    const fn = this.handle;
+    if (fn.length !== 4) {
+      return next(error);
+    }
+    try {
+      fn(error, req, res, next)
+    } catch (err) {
+      next(err)
+    }
   }
 }
 

@@ -19,7 +19,18 @@ class Application {
         res.end(body);
       }
     }
-    this._router.handle(req, res)
+    const done = (err) => {
+      res.writeHead(404, {
+        'Content-Type': 'text/plain'
+      })
+      if (err) {
+        res.end('404' + err);
+      } else {
+        const msg = 'Can not ' + req.method + ' ' + req.url;
+        res.end(msg)
+      }
+    }
+    this._router.handle(req, res, done)
   }
 }
 http.METHODS.forEach(method => {

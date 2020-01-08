@@ -11,13 +11,32 @@ class Route {
     const name = method.toLowerCase();
     return Boolean(this.methods[name]);
   }
-  dispatch(req, res) {
+  dispatch(req, res, done) {
+    let idx = 0;
     const method = req.method.toLowerCase();
-    for (let i = 0; i < this.stack.length; i++) {
-      if (this.stack[i].method === method) {
-        return this.stack[i].handle_requrest(req, res)
+    const stack = this.stack;
+    function next(err) {
+      if (err && err === 'route') {
+        return done(err);
+      }
+      if (err && err === 'router') {
+        return done(err);
+      }
+      if (idx >= stack.length) {
+        return done(err);
+      }
+      const layer = stack[idx++];
+      if (method !== layer.method) {
+        return next(err);
+      }
+
+      if (err) {
+        layer.handle_error(err, req, res, next);
+      } else {
+        layer.handle_requrest(req, res, next)
       }
     }
+    next();
   }
 }
 
