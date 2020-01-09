@@ -1,6 +1,9 @@
 const http = require('http');
+const url = require('url');
 const Layer = require('./Layer');
 const Route = require('./Route');
+
+
 
 const proto = {
   route(path) {
@@ -14,18 +17,57 @@ const proto = {
     let idx = 0;
     const method = req.method;
     const stack = this.stack;
+    let removed = '';
+    let slashAdded = false;
+    debugger;
+    const parentUrl = req.baseUrl || '';
+
+    req.baseUrl = parentUrl;
+
+    req.orginalUrl = req.orginalUrl || req.url;
+
     function next(err) {
       const layerError = (err === 'route' ? null : err);
+
+      if (slashAdded) {
+        req.url = '';
+        slashAdded = false;
+      }
+
+      if (removed.length !== 0) {
+        req.baseUrl = parentUrl;
+        req.url = removed + req.url;
+        removed = '';
+      }
+
       if (layerError === 'router') {
         return done(null);
       }
-      if (idx >= stack.length || layerError) {
+      if (idx >= stack.length) {
         return done(layerError);
       }
+
+      const path = url.parse(req.url).pathname;
+
       const layer = stack[idx++];
-      if (layer.match(req.url)) {
+
+      if (layer.match(path)) {
+
         if (!layer.route) {
-          layer.handle_requrest(req, res, next)
+          removed = layer.path;
+          req.url = req.url.substr(removed.length);
+          if (req.url === '') {
+            req.url = '/' + req.url;
+            slashAdded = true;
+          }
+
+          req.baseUrl = parentUrl + removed;
+
+          if (layerError) {
+            layer.handle_error(layerError, req, res, next)
+          } else {
+            layer.handle_requrest(req, res, next)
+          }
         } else if (layer.route._handles_method(method)) {
           return layer.handle_requrest(req, res, next);
         }
