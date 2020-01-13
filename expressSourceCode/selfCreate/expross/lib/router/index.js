@@ -3,8 +3,6 @@ const url = require('url');
 const Layer = require('./Layer');
 const Route = require('./Route');
 
-
-
 const proto = {
   route(path) {
     const route = new Route(path);
@@ -19,7 +17,6 @@ const proto = {
     const stack = this.stack;
     let removed = '';
     let slashAdded = false;
-    debugger;
     const parentUrl = req.baseUrl || '';
 
     req.baseUrl = parentUrl;
@@ -48,9 +45,8 @@ const proto = {
       }
 
       const path = url.parse(req.url).pathname;
-
       const layer = stack[idx++];
-
+      debugger;
       if (layer.match(path)) {
 
         if (!layer.route) {
@@ -63,6 +59,9 @@ const proto = {
 
           req.baseUrl = parentUrl + removed;
 
+          if (!layer.path) {
+            layer.path = '/';
+          }
           if (layerError) {
             layer.handle_error(layerError, req, res, next)
           } else {
@@ -78,12 +77,21 @@ const proto = {
     next();
   },
   use(path, fn) {
+    let setPath = false;
     if (typeof path === 'function') {
       fn = path;
-      path = '/'
+      path = '/';
+      setPath = true;
     }
+
     const layer = new Layer(path, fn);
     layer.route = undefined;
+    if (proto.isPrototypeOf(fn)) {
+      layer.isRouter = true;
+    }
+    if (setPath) {
+      layer.setPath = setPath
+    }
     this.stack.push(layer);
     return this;
   }

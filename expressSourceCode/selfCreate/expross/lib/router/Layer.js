@@ -29,12 +29,14 @@ class Layer {
     }
 
     if (!this.route) {
-      if (this.path === '/') {
+      if (this.setPath && this.path === '/') {
         this.path = '';
         return true;
       }
-
-      if (this.path === path.slice(0, this.path.length)) {
+      if (this.isRouter && this.path === path.slice(0, this.path.length)) {
+        return true;
+      }
+      if (this.path === path) {
         return true;
       }
     }

@@ -1,9 +1,10 @@
 const http = require('http');
+const middleware = require('./middleware/init');
 const Router = require('./router');
 
 class Application {
   constructor() {
-    this._router = new Router();
+    this.lazyrouter();
   }
   listen(port, cb) {
     const httpServer = http.createServer((req, res) => {
@@ -13,12 +14,6 @@ class Application {
   }
 
   handle(req, res) {
-    if (!res.send) {
-      res.send = function (body) {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end(body);
-      }
-    }
     const done = (err) => {
       res.writeHead(404, {
         'Content-Type': 'text/plain'
@@ -30,17 +25,27 @@ class Application {
         res.end(msg)
       }
     }
-    this._router.handle(req, res, done)
+    if (this._router) {
+      this._router.handle(req, res, done)
+    } else {
+      done();
+    }
   }
 
   use(path, fn) {
-    const router = this._router;
     if (typeof path === 'function') {
       fn = path;
       path = '/'
     }
-    router.use(path, fn)
+    this._router.use(path, fn)
     return this;
+  }
+
+  lazyrouter() {
+    if (!this._router) {
+      this._router = new Router();
+      this._router.use(middleware.init);
+    }
   }
 }
 http.METHODS.forEach(method => {

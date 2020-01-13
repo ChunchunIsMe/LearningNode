@@ -19,9 +19,18 @@ router.use(function (req, res, next) {
   next();
 });
 
+router.use('/a', function (req, res, next) {
+  res.send('3');
+})
+
+router.use('/a/b', function (req, res, next) {
+  res.send('4');
+})
+
 router.use('/', function (req, res, next) {
   res.send('second');
 });
+
 
 app.use('/user', router);
 
